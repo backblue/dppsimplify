@@ -1,6 +1,9 @@
-# Builds Linux binaries on every push to main and publishes them to the "latest" release, so a
-# server can download a ready binary instead of compiling. The server still needs the matching
-# D++ .deb installed (currently 10.1.6) for libdpp.so.
+# Builds Linux bundles on every push to main and publishes them to the "latest" release.
+#
+# Everything is built inside Debian 12 (glibc 2.36), so the result runs on Debian 12 and anything
+# newer (Ubuntu 24.04, Debian 13, ...). D++ is compiled from source here because the official .deb
+# needs glibc 2.38. Each bundle holds the bot plus that libdpp.so; the bot finds it via
+# RPATH=$ORIGIN, so the server doesn't need D++ installed.
 name: build
 
 on:
@@ -11,6 +14,9 @@ on:
 permissions:
   contents: write
 
+env:
+  DPP_VERSION: v10.1.6
+
 jobs:
   build:
     strategy:
@@ -19,33 +25,88 @@ jobs:
         include:
           - arch: x64
             runner: ubuntu-24.04
-            dpp_deb: https://github.com/brainboxdotcc/DPP/releases/download/v10.1.6/libdpp-10.1.6-linux-x64.deb
           - arch: arm64
             runner: ubuntu-24.04-arm
-            dpp_deb: https://github.com/brainboxdotcc/DPP/releases/download/v10.1.6/libdpp-10.1.6-linux-rpi-arm64.deb
     runs-on: ${{ matrix.runner }}
+    container: debian:12
     steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential cmake git ca-certificates libssl-dev zlib1g-dev
+
       - uses: actions/checkout@v4
 
-      - name: Install D++
-        run: |
-          sudo apt-get update
-          wget -qO dpp.deb "${{ matrix.dpp_deb }}"
-          sudo apt-get install -y ./dpp.deb cmake
+      - name: Cache D++ build
+        id: dpp-cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/dpp
+          key: dpp-${{ env.DPP_VERSION }}-debian12-${{ matrix.arch }}
 
-      - name: Build
+      - name: Build D++ from source
+        if: steps.dpp-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "$DPP_VERSION" https://github.com/brainboxdotcc/DPP.git /tmp/dpp
+          cmake -S /tmp/dpp -B /tmp/dpp/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/dpp \
+            -DDPP_BUILD_TEST=OFF -DBUILD_VOICE_SUPPORT=OFF -DRUN_LDCONFIG=OFF
+          cmake --build /tmp/dpp/build -j"$(nproc)"
+          cmake --install /tmp/dpp/build
+
+      - name: Build bot
+        env:
+          CMAKE_PREFIX_PATH: /opt/dpp
         run: cmake --workflow --preset release
 
-      - name: Check it links
-        run: ldd build/dppsimplify | grep dpp
+      - name: Bundle binary + libdpp
+        run: |
+          lib=$(find /opt/dpp -name 'libdpp.so.*' -type f | head -1)
+          soname=$(objdump -p "$lib" | awk '/SONAME/ {print $2}')
+          mkdir bundle
+          cp build/dppsimplify bundle/
+          cp "$lib" "bundle/$soname"
+          tar -czf dppsimplify-linux-${{ matrix.arch }}.tar.gz -C bundle .
+          tar -tzvf dppsimplify-linux-${{ matrix.arch }}.tar.gz
 
       - uses: actions/upload-artifact@v4
         with:
           name: dppsimplify-linux-${{ matrix.arch }}
-          path: build/dppsimplify
+          path: dppsimplify-linux-${{ matrix.arch }}.tar.gz
+
+  # Runs each bundle in a clean Debian 12 with no build tools or D++, like the server.
+  smoke-test:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: debian:12
+    steps:
+      - name: Install runtime libraries a stock server has
+        run: apt-get update && apt-get install -y --no-install-recommends libssl3 zlib1g ca-certificates
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dppsimplify-linux-${{ matrix.arch }}
+
+      - name: Check it loads and starts
+        run: |
+          mkdir app && tar -xzf dppsimplify-linux-${{ matrix.arch }}.tar.gz -C app
+          ldd app/dppsimplify
+          ! ldd app/dppsimplify | grep -q "not found"
+          ldd app/dppsimplify | grep dpp | grep -q "$PWD/app/"
+          # No config given -> it should get as far as reading the config and fail there.
+          out=$(app/dppsimplify /nonexistent.properties 2>&1 || true)
+          echo "$out"
+          echo "$out" | grep -q "Could not open /nonexistent.properties"
 
   release:
-    needs: build
+    needs: smoke-test
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -53,16 +114,19 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: true
 
       - name: Publish to the "latest" release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          for arch in x64 arm64; do
-            cp "artifacts/dppsimplify-linux-$arch/dppsimplify" "dppsimplify-linux-$arch"
-          done
           git tag -f latest
           git push -f origin latest
           gh release view latest >/dev/null 2>&1 || \
-            gh release create latest --title "Latest build" --notes "Linux binaries built from main. Requires D++ 10.1.6 (libdpp) on the server."
-          gh release upload latest dppsimplify-linux-x64 dppsimplify-linux-arm64 --clobber
+            gh release create latest --title "Latest build" --notes "Linux bundles built from main."
+          gh release edit latest --notes "Linux bundles (bot + libdpp.so) built from main on Debian 12. Run on Debian 12+ / Ubuntu 24.04+; no D++ install needed. Extract with: tar -xzf dppsimplify-linux-<arch>.tar.gz"
+          # Remove the old bare binaries from before bundling.
+          for old in dppsimplify-linux-x64 dppsimplify-linux-arm64; do
+            gh release delete-asset latest "$old" -y 2>/dev/null || true
+          done
+          gh release upload latest artifacts/*.tar.gz --clobber

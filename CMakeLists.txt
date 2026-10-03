@@ -37,3 +37,9 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON
 )
+
+# On Linux, also look for libdpp.so next to the executable, so a release bundle
+# (binary + libdpp.so in one folder) runs without D++ installed system-wide.
+if(UNIX AND NOT APPLE)
+    set_target_properties(${PROJECT_NAME} PROPERTIES BUILD_RPATH "\$ORIGIN")
+endif()
