@@ -3,6 +3,7 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/dppsimplify.iml" filepath="$PROJECT_DIR$/dppsimplify.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/dppsimplify.CMake.iml" filepath="$PROJECT_DIR$/.idea/dppsimplify.CMake.iml" />
     </modules>
   </component>
 </project>
