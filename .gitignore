@@ -3,6 +3,7 @@ config.properties
 
 # Build output
 build/
+build-*/
 cmake-build-*/
 
 # macOS

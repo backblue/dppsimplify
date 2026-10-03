@@ -1,0 +1,68 @@
+# Builds Linux binaries on every push to main and publishes them to the "latest" release, so a
+# server can download a ready binary instead of compiling. The server still needs the matching
+# D++ .deb installed (currently 10.1.6) for libdpp.so.
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+            dpp_deb: https://github.com/brainboxdotcc/DPP/releases/download/v10.1.6/libdpp-10.1.6-linux-x64.deb
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            dpp_deb: https://github.com/brainboxdotcc/DPP/releases/download/v10.1.6/libdpp-10.1.6-linux-rpi-arm64.deb
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install D++
+        run: |
+          sudo apt-get update
+          wget -qO dpp.deb "${{ matrix.dpp_deb }}"
+          sudo apt-get install -y ./dpp.deb cmake
+
+      - name: Build
+        run: cmake --workflow --preset release
+
+      - name: Check it links
+        run: ldd build/dppsimplify | grep dpp
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dppsimplify-linux-${{ matrix.arch }}
+          path: build/dppsimplify
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish to the "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for arch in x64 arm64; do
+            cp "artifacts/dppsimplify-linux-$arch/dppsimplify" "dppsimplify-linux-$arch"
+          done
+          git tag -f latest
+          git push -f origin latest
+          gh release view latest >/dev/null 2>&1 || \
+            gh release create latest --title "Latest build" --notes "Linux binaries built from main. Requires D++ 10.1.6 (libdpp) on the server."
+          gh release upload latest dppsimplify-linux-x64 dppsimplify-linux-arm64 --clobber
