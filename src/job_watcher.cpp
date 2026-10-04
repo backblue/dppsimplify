@@ -1,7 +1,6 @@
 #include "job_watcher.h"
 
 #include <algorithm>
-#include <cctype>
 #include <map>
 #include <unordered_set>
 #include <utility>
@@ -94,7 +93,7 @@ namespace simplify
         string title = j.title + " @ " + j.company;
         if (title.size() > 256) title = title.substr(0, 253) + "...";
 
-        dpp::embed e = dpp::embed()
+        const dpp::embed e = dpp::embed()
             .set_color(dpp::colors::yellow)
             .set_author("New " + j.category + " posting", REPO_URL, "")
             .set_title(title)
@@ -115,7 +114,7 @@ namespace simplify
         static const unordered_set<string> wanted{
             "url", "company_name", "title", "category", "active", "terms", "locations", "date_posted"
         };
-        const auto keep = [](int depth, json::parse_event_t event, json& parsed)
+        const auto keep = [](int depth, const json::parse_event_t event, const json& parsed)
         {
             return !(event == json::parse_event_t::key && depth == 2 && !wanted.contains(parsed.get<string>()));
         };
