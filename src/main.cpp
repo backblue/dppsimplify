@@ -66,10 +66,17 @@ int main(int argc, char** argv)
     dpp::cluster bot{
         require("TOKEN"), dpp::i_default_intents | dpp::i_message_content | dpp::i_guild_members
     };
-    bot.on_log(dpp::utility::cout_logger());
+    // Like dpp::utility::cout_logger(), minus DEBUG: those lines include full webhook URLs (with tokens).
+    bot.on_log([](const dpp::log_t& e)
+    {
+        if (e.severity < dpp::ll_info) return;
+        cout << "[" << dpp::utility::current_date_time() << "] " << dpp::utility::loglevel(e.severity)
+             << ": " << e.message << endl;
+    });
 
-    simplify::forwarder forwarder{bot, {{GENERAL_ID, gen_hook}, {MUDAE_ID, mudae_hook}}};
-    simplify::job_watcher jobs{bot, jobs_hook};
+    simplify::webhook_queue queue{bot};
+    simplify::forwarder forwarder{bot, queue, {{GENERAL_ID, gen_hook}, {MUDAE_ID, mudae_hook}}};
+    simplify::job_watcher jobs{bot, queue, jobs_hook};
 
     bot.on_ready([&jobs](const dpp::ready_t&)
     {

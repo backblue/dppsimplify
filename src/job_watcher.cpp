@@ -10,8 +10,8 @@ using json = nlohmann::json;
 
 namespace simplify
 {
-    job_watcher::job_watcher(dpp::cluster& bot, dpp::webhook hook)
-        : bot(bot), hook(std::move(hook))
+    job_watcher::job_watcher(dpp::cluster& bot, webhook_queue& queue, dpp::webhook hook)
+        : bot(bot), queue(queue), hook(std::move(hook))
     {
     }
 
@@ -68,32 +68,67 @@ namespace simplify
                 if (lower == "etag") etag = value;
             }
 
-            if (seeded)
-            {
-                for (const auto& [url, j] : now)
-                    if (!last.contains(url) && !is_canada_or_uk_only(j.locations))
-                        fresh.push_back(j);
-            }
-            else
+            for (auto& [url, j] : now)
+                if (seen.insert(url).second && seeded && !is_canada_or_uk_only(j.locations))
+                    fresh.push_back(std::move(j));
+
+            if (!seeded)
             {
                 bot.log(dpp::ll_info, "Loaded " + to_string(now.size()) + " jobs");
                 seeded = true;
             }
-            last = std::move(now);
         }
 
-        for (const job& j : fresh) notify(j);
+        if (fresh.empty()) return;
+
+        dpp::webhook w = hook;
+        w.name = "New Job";
+        if (fresh.size() > MAX_NEW_PER_POLL)
+        {
+            bot.log(dpp::ll_warning, to_string(fresh.size()) + " new postings in one poll; posting a notice instead");
+            queue.post(w, dpp::message(to_string(fresh.size()) + " new postings at once (likely a feed reset). See " +
+                                       REPO_URL + " for the full list."));
+            return;
+        }
+
+        ranges::sort(fresh, {}, &job::date_posted);   // oldest first, so the newest ends up at the bottom
+        notify(fresh);
     }
 
-    void job_watcher::notify(const job& j) const
+    // Packs the embeds into as few messages as Discord allows; the queue spaces them out.
+    void job_watcher::notify(const vector<job>& jobs) const
     {
-        bot.log(dpp::ll_info, "New posting: " + j.title + " @ " + j.company + " " + j.url);
+        dpp::webhook w = hook;
+        w.name = "New Job";
 
+        dpp::message msg;
+        size_t chars = 0;
+        for (const job& j : jobs)
+        {
+            bot.log(dpp::ll_info, "New posting: " + j.title + " @ " + j.company + " " + j.url);
+
+            dpp::embed e = make_embed(j);
+            const size_t n = embed_chars(e);
+            if (!msg.embeds.empty() &&
+                (msg.embeds.size() == MAX_EMBEDS_PER_MESSAGE || chars + n > MAX_EMBED_CHARS_PER_MESSAGE))
+            {
+                queue.post(w, msg);
+                msg = dpp::message();
+                chars = 0;
+            }
+            msg.add_embed(e);
+            chars += n;
+        }
+        if (!msg.embeds.empty()) queue.post(w, msg);
+    }
+
+    dpp::embed job_watcher::make_embed(const job& j)
+    {
         // Discord limits: title 256, field value 1024.
         string title = j.title + " @ " + j.company;
         if (title.size() > 256) title = title.substr(0, 253) + "...";
 
-        const dpp::embed e = dpp::embed()
+        return dpp::embed()
             .set_color(dpp::colors::yellow)
             .set_author("New " + j.category + " posting", REPO_URL, "")
             .set_title(title)
@@ -102,10 +137,16 @@ namespace simplify
             .add_field("Location", join(j.locations, 1024), false)
             .set_footer("Created on", "")
             .set_timestamp(j.date_posted);
+    }
 
-        dpp::webhook w = hook;
-        w.name = "New Job";
-        bot.execute_webhook(w, dpp::message().add_embed(e));
+    // The characters Discord counts toward the 6000-per-message embed limit.
+    size_t job_watcher::embed_chars(const dpp::embed& e)
+    {
+        size_t n = e.title.size() + e.description.size();
+        if (e.author) n += e.author->name.size();
+        if (e.footer) n += e.footer->text.size();
+        for (const dpp::embed_field& f : e.fields) n += f.name.size() + f.value.size();
+        return n;
     }
 
     unordered_map<string, job_watcher::job> job_watcher::parse(const string& body)

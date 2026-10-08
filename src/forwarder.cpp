@@ -10,8 +10,8 @@ using namespace std;
 
 namespace simplify
 {
-    forwarder::forwarder(dpp::cluster& bot, unordered_map<dpp::snowflake, dpp::webhook> routes)
-        : bot(bot), routes(std::move(routes))
+    forwarder::forwarder(dpp::cluster& bot, webhook_queue& queue, unordered_map<dpp::snowflake, dpp::webhook> routes)
+        : bot(bot), queue(queue), routes(std::move(routes))
     {
         bot.on_message_create([this](const dpp::message_create_t& ev) { on_create(ev); });
         bot.on_message_update([this](const dpp::message_update_t& ev) { on_update(ev); });
@@ -31,7 +31,7 @@ namespace simplify
 
         {
             lock_guard lk(mu);
-            messages[m.id] = {m.content, text, 0};
+            messages[m.id] = {m.content};
             order.push_back(m.id);
             while (order.size() > MAX_TRACKED)
             {
@@ -40,11 +40,7 @@ namespace simplify
             }
         }
 
-        send(m, route->second, text, "", [this, id = m.id](dpp::snowflake mirror_id)
-        {
-            lock_guard lk(mu);
-            if (const auto it = messages.find(id); it != messages.end()) it->second.mirror_id = mirror_id;
-        });
+        send(m, route->second, text, "");
     }
 
     void forwarder::on_update(const dpp::message_update_t& ev)
@@ -65,29 +61,17 @@ namespace simplify
         send(m, route->second, flatten_mentions(m), " - Edited");
     }
 
+    // The mirrored copy is left as-is; deleting the original only stops tracking it for edits.
     void forwarder::on_delete(const dpp::message_delete_t& ev)
     {
-        const auto route = routes.find(ev.channel_id);
-        if (route == routes.end()) return;
+        if (!routes.contains(ev.channel_id)) return;
 
-        tracked t;
-        {
-            lock_guard lk(mu);
-            const auto it = messages.find(ev.id);
-            if (it == messages.end()) return;
-            t = it->second;
-            messages.erase(it);   // its id stays in `order`; erasing a missing key later is harmless
-        }
-        if (t.mirror_text.empty() || !t.mirror_id) return;
-
-        dpp::message edit("~~" + t.mirror_text + "~~");
-        edit.id = t.mirror_id;
-        edit.set_allowed_mentions(false, false, false, false);
-        bot.edit_webhook_message(route->second, edit);
+        lock_guard lk(mu);
+        messages.erase(ev.id);   // its id stays in `order`; erasing a missing key later is harmless
     }
 
     void forwarder::send(const dpp::message& m, const dpp::webhook& hook, const string& text,
-                         const string& name_suffix, function<void(dpp::snowflake)> on_sent) const
+                         const string& name_suffix) const
     {
         dpp::webhook w = hook;
         w.name = display_name(m) + name_suffix;
@@ -104,23 +88,37 @@ namespace simplify
         p->files.resize(m.attachments.size());
         p->remaining = m.attachments.size();
 
-        auto post = [this, w, text, p, on_sent]
+        vector<string> urls;
+        for (const dpp::attachment& a : m.attachments) urls.push_back(a.url);
+
+        auto post = [this, w, text, p, urls]
         {
             dpp::message out(text);
             out.set_allowed_mentions(false, false, false, false);   // never ping, even @everyone
+            size_t attached = 0;
             for (auto& f : p->files)
-                if (f) out.add_file(f->first, f->second);
-
-            bot.execute_webhook(w, out, /*wait=*/true, 0, "",
-                [on_sent](const dpp::confirmation_callback_t& cb)
+                if (f)
                 {
-                    if (cb.is_error())
-                    {
-                        cout << "Webhook post failed: " << cb.get_error().human_readable << '\n';
-                        return;
-                    }
-                    if (on_sent) on_sent(cb.get<dpp::message>().id);
-                });
+                    out.add_file(f->first, f->second);
+                    ++attached;
+                }
+
+            // Every download failed and there's no text: link the originals instead of posting an
+            // empty message, which Discord rejects. (Signed CDN links expire after about a day.)
+            if (attached == 0 && text.empty())
+            {
+                string links;
+                for (const string& u : urls) links += (links.empty() ? "" : "\n") + u;
+                out.set_content(links);
+            }
+
+            queue.post(w, out, [this, attached](const dpp::confirmation_callback_t& cb)
+            {
+                if (cb.is_error())
+                    bot.log(dpp::ll_error, "Webhook post failed (HTTP " + to_string(cb.http_info.status) +
+                        ", " + to_string(attached) + " file(s)): " + cb.get_error().human_readable +
+                        " | " + cb.http_info.body.substr(0, 500));
+            });
         };
 
         if (m.attachments.empty())
@@ -132,8 +130,11 @@ namespace simplify
         for (size_t i = 0; i < m.attachments.size(); ++i)
         {
             const dpp::attachment& a = m.attachments[i];
-            bot.request(a.url, dpp::m_get, [p, i, name = a.filename, post](const dpp::http_request_completion_t& r)
+            bot.request(a.url, dpp::m_get, [this, p, i, name = a.filename, post](const dpp::http_request_completion_t& r)
             {
+                if (r.status != 200)
+                    bot.log(dpp::ll_warning, "Attachment download failed: HTTP " + to_string(r.status) + " for " + name);
+
                 bool last;
                 {
                     lock_guard lk(p->mu);
