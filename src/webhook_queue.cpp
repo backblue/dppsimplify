@@ -80,7 +80,7 @@ namespace simplify
             send_next(id);
     }
 
-    void webhook_queue::after(uint64_t seconds, function<void()> fn)
+    void webhook_queue::after(const uint64_t seconds, function<void()> fn) const
     {
         // One-shot: stop the timer on its first tick.
         bot.start_timer([this, fn = std::move(fn)](dpp::timer t)

@@ -41,7 +41,7 @@ namespace simplify
 
         void send_next(dpp::snowflake id);
         void on_result(dpp::snowflake id, const dpp::confirmation_callback_t& cb);
-        void after(uint64_t seconds, std::function<void()> fn);
+        void after(uint64_t seconds, std::function<void()> fn) const;
     };
 }
 

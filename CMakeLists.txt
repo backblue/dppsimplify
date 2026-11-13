@@ -14,6 +14,8 @@ add_executable(${PROJECT_NAME}
         src/job_watcher.h
         src/webhook_queue.cpp
         src/webhook_queue.h
+        src/vc_joins.cpp
+        src/vc_joins.h
 )
 
 # Find our pre-installed DPP package (using FindDPP.cmake).
