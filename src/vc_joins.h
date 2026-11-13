@@ -2,7 +2,9 @@
 #define DPPSIMPLIFY_VC_JOINS_H
 
 #include <dpp/dpp.h>
+#include <chrono>
 #include <ctime>
+#include <deque>
 #include <mutex>
 #include <unordered_map>
 
@@ -28,6 +30,14 @@ namespace simplify
         };
         std::unordered_map<dpp::snowflake, std::unordered_map<dpp::snowflake, dpp::voicestate>> channels;
         std::unordered_map<dpp::snowflake, std::unordered_map<dpp::snowflake, presence_snapshot>> statuses;
+        struct recent_status
+        {
+            dpp::snowflake guild;
+            dpp::snowflake user;
+            std::string text;
+            std::chrono::steady_clock::time_point posted_at;
+        };
+        std::deque<recent_status> recent_statuses; // Only retain notices within the three-second window.
 
         static presence_snapshot describe(const dpp::presence& presence);
         void on_update(const dpp::voice_state_update_t& ev);

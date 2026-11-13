@@ -153,8 +153,18 @@ namespace simplify
         // Initial guild presences omit offline members. Treat an unlisted member as offline.
         const string old_text = previous == members.end() ? "CHANGE STATUS TO `OFFLINE`" : previous->second.text;
         members[presence.user_id] = status;
-        if (old_text != status.text)
-            send(presence.guild_id, presence.user_id, status.text, time(nullptr));
+        if (old_text == status.text) return;
+
+        const auto now = chrono::steady_clock::now();
+        while (!recent_statuses.empty() && now - recent_statuses.front().posted_at >= chrono::seconds(3))
+            recent_statuses.pop_front();
+        if (ranges::any_of(recent_statuses, [&](const recent_status& recent)
+        {
+            return recent.guild == presence.guild_id && recent.user == presence.user_id && recent.text == status.text;
+        })) return;
+
+        send(presence.guild_id, presence.user_id, status.text, time(nullptr));
+        recent_statuses.push_back({presence.guild_id, presence.user_id, status.text, now});
     }
 
     void vc_joins::send(dpp::snowflake guild, dpp::snowflake user_id, const string& text,
