@@ -91,17 +91,41 @@ int main(int argc, char** argv)
         cout << "[" << dpp::utility::current_date_time() << "] " << dpp::utility::loglevel(e.severity)
              << ": " << e.message << endl;
     });
+    bot.log(dpp::ll_info, "Config: " + config_path + "; OFFLINE_STATUS=" + offline_status);
+
+    const auto apply_offline_presence = [&bot, appear_offline](const dpp::event_dispatch_t& ev)
+    {
+        if (!appear_offline) return;
+        auto* shard = ev.from();
+        if (!shard)
+        {
+            bot.log(dpp::ll_warning, "Could not queue invisible presence: event shard unavailable");
+            return;
+        }
+        // D++ serializes ps_invisible as "offline". Send Discord's explicit invisible status,
+        // with no activity, on the shard that just connected or resumed.
+        const nlohmann::json presence = {
+            {"op", 3},
+            {"d", {{"since", nullptr}, {"activities", nlohmann::json::array()},
+                   {"status", "invisible"}, {"afk", false}}}
+        };
+        shard->queue_message(presence.dump()); // This bot uses D++'s default JSON gateway protocol.
+        bot.log(dpp::ll_info, "Queued invisible presence for shard " + to_string(ev.shard));
+    };
 
     simplify::webhook_queue queue{bot};
     simplify::forwarder forwarder{bot, queue, {{GENERAL_ID, gen_hook}, {MUDAE_ID, mudae_hook}}};
     simplify::job_watcher jobs{bot, queue, jobs_hook};
     simplify::vc_joins voice{bot, queue, vc_hook};
 
-    bot.on_ready([&bot, &jobs, appear_offline, online_channel](const dpp::ready_t&)
+    bot.on_resumed([apply_offline_presence](const dpp::resumed_t& ev)
     {
-        // Reapply invisible presence on reconnect, but start only one heartbeat timer.
-        if (appear_offline)
-            bot.set_presence(dpp::presence(dpp::ps_invisible, dpp::at_game, ""));
+        apply_offline_presence(ev);
+    });
+
+    bot.on_ready([&bot, &jobs, appear_offline, online_channel, apply_offline_presence](const dpp::ready_t& ev)
+    {
+        apply_offline_presence(ev);
 
         if (dpp::run_once<struct start_job_watcher>())
         {
