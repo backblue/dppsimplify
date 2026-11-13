@@ -25,7 +25,9 @@ namespace simplify
         const char* label = "OFFLINE";
         switch (presence.status())
         {
-            case dpp::ps_online: label = "ONLINE"; break;
+            case dpp::ps_online:
+                label = presence.mobile_status() == dpp::ps_online ? "ONLINE/MOBILE" : "ONLINE";
+                break;
             case dpp::ps_idle: label = "IDLE"; break;
             case dpp::ps_dnd: label = "DND"; break;
             default: break;
