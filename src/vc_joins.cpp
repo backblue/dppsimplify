@@ -160,11 +160,11 @@ namespace simplify
             recent_statuses.pop_front();
         if (ranges::any_of(recent_statuses, [&](const recent_status& recent)
         {
-            return recent.guild == presence.guild_id && recent.user == presence.user_id && recent.text == status.text;
+            return recent.user == presence.user_id && recent.text == status.text;
         })) return;
 
         send(presence.guild_id, presence.user_id, status.text, time(nullptr));
-        recent_statuses.push_back({presence.guild_id, presence.user_id, status.text, now});
+        recent_statuses.push_back({presence.user_id, status.text, now});
     }
 
     void vc_joins::send(dpp::snowflake guild, dpp::snowflake user_id, const string& text,

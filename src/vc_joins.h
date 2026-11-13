@@ -32,11 +32,11 @@ namespace simplify
         std::unordered_map<dpp::snowflake, std::unordered_map<dpp::snowflake, presence_snapshot>> statuses;
         struct recent_status
         {
-            dpp::snowflake guild;
             dpp::snowflake user;
             std::string text;
             std::chrono::steady_clock::time_point posted_at;
         };
+        // One webhook receives all guilds: deduplicate the same user's text across guilds.
         std::deque<recent_status> recent_statuses; // Only retain notices within the three-second window.
 
         static presence_snapshot describe(const dpp::presence& presence);
